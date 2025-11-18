@@ -7,11 +7,14 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 import torch
+
+torch.backends.mkldnn.enabled = False  # disable MKLDNN to get second-order grads on CPU
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import grad
 import torchvision
 from torchvision import models, datasets, transforms
+
 
 print(torch.__version__, torchvision.__version__)
 
@@ -50,7 +53,9 @@ gt_label = gt_label.view(
 )
 gt_onehot_label = label_to_onehot(gt_label)
 
+plt.figure("Ground Truth")
 plt.imshow(tt(gt_data[0].cpu()))
+plt.axis("off")
 
 from models.vision import LeNet, weights_init
 
@@ -73,9 +78,11 @@ original_dy_dx = list((_.detach().clone() for _ in dy_dx))
 dummy_data = torch.randn(gt_data.size()).to(device).requires_grad_(True)
 dummy_label = torch.randn(gt_onehot_label.size()).to(device).requires_grad_(True)
 
-plt.imshow(tt(dummy_data[0].cpu()))
+plt.figure("Dummy Init")
+plt.imshow(tt(dummy_data[0].detach().cpu()))
+plt.axis("off")
 
-optimizer = torch.optim.LBFGS([dummy_data, dummy_label])
+optimizer = torch.optim.LBFGS([dummy_data, dummy_label], line_search_fn="strong_wolfe")
 
 
 history = []
@@ -99,12 +106,16 @@ for iters in range(300):
         return grad_diff
 
     optimizer.step(closure)
-    if iters % 10 == 0:
-        current_loss = closure()
-        print(iters, "%.4f" % current_loss.item())
-        history.append(tt(dummy_data[0].cpu()))
 
-plt.figure(figsize=(12, 8))
+    with torch.no_grad():
+        if iters % 10 == 0:
+            dummy_pred = net(dummy_data)
+            dummy_onehot = F.softmax(dummy_label, dim=-1)
+            current_loss = criterion(dummy_pred, dummy_onehot)
+            print(iters, "%.4f" % current_loss.item())
+            history.append(tt(dummy_data[0].detach().cpu()))
+
+plt.figure("Iteration", figsize=(12, 8))
 for i in range(30):
     plt.subplot(3, 10, i + 1)
     plt.imshow(history[i])
