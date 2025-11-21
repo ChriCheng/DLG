@@ -46,24 +46,28 @@ img_index = args.index
 
 
 if len(args.image) > 1:
-    # gt_data = Image.open(args.image)
-    # gt_data = tp(gt_data).to(device)
-
-    # 1. 读入图片（PNG / JPG 都行）
+    # 1. read image
     img = Image.open(args.image).convert("RGB")
+    target_size = (32, 32)
 
-    # 2. resize 到模型需要的 32×32
-    img_resized = img.resize((32, 32))
-
-    # 3. 存储 resized 图片（如 photo.png → photo_resize.png）
     folder, filename = os.path.split(args.image)
     name, ext = os.path.splitext(filename)
     resized_path = os.path.join(folder, f"{name}_resize{ext}")
-    img_resized.save(resized_path)
-    print(f"[✔] resized 图像已保存到： {resized_path}")
 
-    # 4. 转 tensor
-    gt_data = tp(img_resized).to(device)
+    # 2. ensure size
+    if img.size == target_size:
+        img_for_model = img
+        print(f"✅ The input size has been met :{target_size}.")
+    elif os.path.exists(resized_path):
+        img_for_model = Image.open(resized_path).convert("RGB")
+        print(f"✅  Existing resized images :{resized_path}.")
+    else:
+        img_for_model = img.resize(target_size)
+        img_for_model.save(resized_path)
+        print(f"✅ Resized pic saving at :{resized_path}")
+
+    # 3. to tensor
+    gt_data = tp(img_for_model).to(device)
 
 else:
     gt_data = tp(dst[img_index][0]).to(device)
@@ -98,6 +102,7 @@ dy_dx = torch.autograd.grad(y, net.parameters())
 original_dy_dx = list(
     (_.detach().clone() for _ in dy_dx)
 )  # detach the gradients to avoid unnecessary computation graph
+
 # So this is FedSGD pattern where only one batch is used to compute gradient
 # even just one epoch of training hhh
 
@@ -107,9 +112,10 @@ dummy_data = torch.randn(gt_data.size()).to(device).requires_grad_(True)
 dummy_label = torch.randn(gt_onehot_label.size()).to(device).requires_grad_(True)
 # data and label are following normal distribution(N(0,1)) to initialize
 
-plt.figure("Dummy Init")
-plt.imshow(tt(dummy_data[0].detach().cpu()))
-plt.axis("off")
+# nobody care about this dummy init image (
+# plt.figure("Dummy Init")
+# plt.imshow(tt(dummy_data[0].detach().cpu()))
+# plt.axis("off")
 
 optimizer = torch.optim.LBFGS([dummy_data, dummy_label], line_search_fn="strong_wolfe")
 # qutoted from DLG ‘We use L-BFGS [25] with learning rate 1,
@@ -172,6 +178,13 @@ if history:
         plt.imshow(snapshot)
         plt.title("iter=%d" % (i * 10))
         plt.axis("off")
+    # show the last leaked image
+    plt.figure(" Leaked images")
+    plt.imshow(history[-1])
+    plt.axis("off")
+
     plt.show()
+
+
 else:
     print("No snapshots recorded; nothing to plot.")
