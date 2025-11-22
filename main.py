@@ -28,6 +28,13 @@ parser.add_argument(
 parser.add_argument(
     "--image", type=str, default="", help="the path to customized image."
 )
+parser.add_argument(
+    "--method",
+    type=str,
+    required=True,  # must specify
+    choices=["DLG", "iDLG"],
+    help="Attack method: DLG or iDLG.",
+)
 args = parser.parse_args()
 
 device = "cpu"
@@ -37,6 +44,7 @@ else:
     torch.backends.mkldnn.enabled = False  # disable MKLDNN to get second-order grads on M2 CPU(in fact is Mac vision of PyTorch)
 
 print("Running on %s" % device)
+print(f"Using method: {args.method}")  # 简单提示一下当前攻击方式
 
 dst = datasets.CIFAR100("~/.torch", download=True)  # your dataset path here
 tp = transforms.ToTensor()  # transform to tensor
@@ -79,7 +87,7 @@ gt_label = gt_label.view(
 )
 gt_onehot_label = label_to_onehot(gt_label)
 
-plt.figure("Real Image")
+plt.figure("Ground Truth")
 plt.imshow(tt(gt_data[0].cpu()))
 plt.axis("off")
 
@@ -106,10 +114,28 @@ original_dy_dx = list(
 # So this is FedSGD pattern where only one batch is used to compute gradient
 # even just one epoch of training hhh
 
+# num_classes 可以从 onehot 直接拿，方便后面 iDLG 用
+num_classes = gt_onehot_label.size(1)
+
+# iDLG: 先根据最后一层梯度预测 label，后面直接用这个 one-hot 做监督
+if args.method == "iDLG":
+    # original_dy_dx[-2] 对应最后一层 FC 的 weight (num_classes, hidden_dim)
+    grad_last_weight = original_dy_dx[-2]
+    # 按 iDLG 论文/代码的套路：对每个类别的梯度求和，再取 argmin
+    label_pred = torch.argmin(torch.sum(grad_last_weight, dim=-1)).detach()
+    # 变成 one-hot，形状还是 (1, num_classes)，和 gt_onehot_label 对齐
+    gt_onehot_label_iDLG = (
+        F.one_hot(label_pred, num_classes).float().view(1, -1).to(device)
+    )
+
 
 # generate dummy data and label
 dummy_data = torch.randn(gt_data.size()).to(device).requires_grad_(True)
-dummy_label = torch.randn(gt_onehot_label.size()).to(device).requires_grad_(True)
+
+if args.method == "DLG":
+    dummy_label = torch.randn(gt_onehot_label.size()).to(device).requires_grad_(True)
+else:
+    dummy_label = None  # iDLG 不再优化 label，只优化 dummy_data 就好
 # data and label are following normal distribution(N(0,1)) to initialize
 
 # nobody care about this dummy init image (
@@ -117,7 +143,12 @@ dummy_label = torch.randn(gt_onehot_label.size()).to(device).requires_grad_(True
 # plt.imshow(tt(dummy_data[0].detach().cpu()))
 # plt.axis("off")
 
-optimizer = torch.optim.LBFGS([dummy_data, dummy_label], line_search_fn="strong_wolfe")
+if args.method == "DLG":
+    optimizer = torch.optim.LBFGS(
+        [dummy_data, dummy_label], line_search_fn="strong_wolfe"
+    )
+else:
+    optimizer = torch.optim.LBFGS([dummy_data], line_search_fn="strong_wolfe")
 # qutoted from DLG ‘We use L-BFGS [25] with learning rate 1,
 # history size 100 and max iterations 20 and optimize for 1200 iterations
 # and 100 iterations for image and text task respectively
@@ -134,9 +165,15 @@ for iters in range(300):
         optimizer.zero_grad()
 
         dummy_pred = net(dummy_data)
-        dummy_onehot_label = F.softmax(dummy_label, dim=-1)
-        # apply softmax to make dummy_label one-hot like
-        dummy_loss = criterion(dummy_pred, dummy_onehot_label)
+
+        if args.method == "DLG":
+            dummy_onehot_label = F.softmax(dummy_label, dim=-1)
+            # apply softmax to make dummy_label one-hot like
+            dummy_loss = criterion(dummy_pred, dummy_onehot_label)
+        else:
+            # iDLG：直接用从梯度预测出来的 label 的 one-hot
+            dummy_loss = criterion(dummy_pred, gt_onehot_label_iDLG)
+
         dummy_dy_dx = torch.autograd.grad(
             dummy_loss, net.parameters(), create_graph=True
         )
@@ -153,8 +190,11 @@ for iters in range(300):
     with torch.no_grad():  # record history and avoid unnecessary computation graph
         if iters % 10 == 0:
             dummy_pred = net(dummy_data)
-            dummy_onehot = F.softmax(dummy_label, dim=-1)
-            current_loss = criterion(dummy_pred, dummy_onehot)
+            if args.method == "DLG":
+                dummy_onehot = F.softmax(dummy_label, dim=-1)
+                current_loss = criterion(dummy_pred, dummy_onehot)
+            else:
+                current_loss = criterion(dummy_pred, gt_onehot_label_iDLG)
             current_value = current_loss.item()
             print(iters, "%.4f" % current_value)
             history.append(tt(dummy_data[0].detach().cpu()))
