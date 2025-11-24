@@ -296,6 +296,21 @@ def run_iDLG():
     }
 
 
+def IterPrint(history, name):
+    if history:
+        cols = 10
+        rows = max(1, math.ceil(len(history) / cols))
+        plt.figure(f"{name} Iteration", figsize=(12, 4 * rows))
+        for i, snapshot in enumerate(history):
+            plt.subplot(rows, cols, i + 1)
+            plt.imshow(snapshot)
+            plt.title("iter=%d" % (i * 10))
+            plt.axis("off")
+
+    else:
+        print("No snapshots recorded; nothing to plot.")
+
+
 if args.comp:
     print("\n================ Compare DLG vs iDLG ================\n")
 
@@ -326,8 +341,9 @@ if args.comp:
         plt.imshow(res_idlg["history"][-1])
         plt.title(f"iDLG\nloss={res_idlg['final_loss']:.4f}")
         plt.axis("off")
+    IterPrint(res_dlg["history"], "DLG")
+    IterPrint(res_idlg["history"], "iDLG")
 
-    plt.show()
 
 elif args.method:
     if args.method == "DLG":
@@ -338,20 +354,14 @@ elif args.method:
     history = res["history"]
 
     if history:
-        cols = 10
-        rows = max(1, math.ceil(len(history) / cols))
-        plt.figure("Iteration", figsize=(12, 4 * rows))
-        for i, snapshot in enumerate(history):
-            plt.subplot(rows, cols, i + 1)
-            plt.imshow(snapshot)
-            plt.title("iter=%d" % (i * 10))
-            plt.axis("off")
-        # show the last leaked image
-        plt.figure(" Leaked images")
-        plt.imshow(history[-1])
-        plt.axis("off")
-
-        plt.show()
+        IterPrint(history, args.method)
 
     else:
         print("No snapshots recorded; nothing to plot.")
+
+    # show the last leaked image
+    plt.figure(" Leaked images")
+    plt.imshow(history[-1])
+    plt.axis("off")
+
+plt.show()
