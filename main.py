@@ -384,9 +384,12 @@ if args.comp:
         plt.imshow(res_idlg["history"][-1])
         plt.title(f"iDLG\nloss={res_idlg['final_loss']:.4f}")
         plt.axis("off")
-
-    IterPrint(res_dlg["history"], "DLG")
-    IterPrint(res_idlg["history"], "iDLG")
+    if args.image:
+        IterPrint(res_dlg["history"], args.image + "_DLG")
+        IterPrint(res_idlg["history"], args.image + "_iDLG")
+    else:
+        IterPrint(res_dlg["history"], f"cifar_{ args.index }_DLG")
+        IterPrint(res_idlg["history"], f"cifar_{ args.index }_iDLG")
 
 
 elif args.method:
