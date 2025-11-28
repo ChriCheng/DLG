@@ -1,6 +1,23 @@
-# Deep Leakage From Gradients [[arXiv]](https://arxiv.org/abs/1906.08935) [[Webside]](https://dlg.mit.edu) 
+# DLGlib
+DLGlib is a research-oriented and extensible toolkit dedicated to gradient inversion attacks in deep learning. **base on Deep Leakage From Gradient**.
 
-Notice: I changed the meaning of “loss”. Previously, the loss referred to the discrepancy between dummy_pred and dummy_onehot. However, in DLG the core objective is to minimize the difference between the dummy gradients and the original gradients. In practice, the previous loss is not even used to update the dummy data. Therefore, I redefined the loss to represent the distance between the dummy gradients and the original gradients.
+### Deep Leakage From Gradients [[arXiv]](https://arxiv.org/abs/1906.08935) [[Webside]](https://dlg.mit.edu) 
+### Improved Deep Leakage from Gradients [[arXiv]](https://arxiv.org/abs/2001.02610) [[Webside]](https://github.com/PatrickZH/Improved-Deep-Leakage-from-Gradients) 
+```
+#  image on CIFAR No.25 pic by DLG or iDLG
+python main.py --index 25 --met methoed
+
+
+# Deep Leakage on your own Image by DLG or iDLG
+python main.py --image yours.jpg --met methoed
+
+
+# compare DLG and iDLG on CIFAR or your own Image
+python main.py --image yours.jpg --comp
+python main.py --index 25 --comp
+
+```
+
 
 ```
 @inproceedings{zhu19deep,
