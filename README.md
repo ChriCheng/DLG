@@ -1,11 +1,12 @@
 # DLGlib
 DLGlib is a research-oriented and extensible toolkit dedicated to gradient inversion attacks in deep learning. **base on Deep Leakage From Gradient**.
 
+
 ### Deep Leakage From Gradients [[arXiv]](https://arxiv.org/abs/1906.08935) [[Webside]](https://dlg.mit.edu) 
 ### Improved Deep Leakage from Gradients [[arXiv]](https://arxiv.org/abs/2001.02610) [[Webside]](https://github.com/PatrickZH/Improved-Deep-Leakage-from-Gradients) 
 ```
 #  image on CIFAR No.25 pic by DLG or iDLG
-python main.py --index 25 --met methoed
+python main.py --cifar 25 --met methoed
 
 
 # Deep Leakage on your own Image by DLG or iDLG
@@ -14,7 +15,10 @@ python main.py --image yours.jpg --met methoed
 
 # compare DLG and iDLG on CIFAR or your own Image
 python main.py --image yours.jpg --comp
-python main.py --index 25 --comp
+python main.py --cifar 25 --comp
+
+# Compare DLG and iDLG on a batch of images.
+python main.py  --cifar --bcomp
 
 ```
 

@@ -26,12 +26,15 @@ parser = argparse.ArgumentParser(description="Deep Leakage from Gradients.")
 
 datasets_group = parser.add_mutually_exclusive_group(required=True)
 
+
 datasets_group.add_argument(
     "--cifar",
-    type=int,
-    dest="index",
-    help="the index for leaking images on CIFAR.",
+    nargs="?",
+    const=None,  # no index
+    type=int,  # optional index
+    help="CIFAR dataset. Without index for whole dataset; with index for single image.",
 )
+
 datasets_group.add_argument("--image", type=str, help="the path to customized image.")
 
 compute_group = parser.add_mutually_exclusive_group(required=True)
@@ -47,7 +50,57 @@ compute_group.add_argument(
     action="store_true",
     help="Compare DLG and iDLG on the same image.",
 )
+compute_group.add_argument(
+    "--bcomp",
+    nargs="?",
+    const=None,
+    type=int,
+    help="Batch comparison. No number = whole dataset; number = random subset size.",
+)
+
+
+def get_dataset_choice(args):
+    if hasattr(args, "cifar") and args.cifar is not None:
+        return "cifar", args.cifar
+
+    if args.image is not None:
+        return "image", args.image
+
+    return None, None
+
+
+parser.set_defaults(index=None)
 args = parser.parse_args()
+
+dataset, ds_value = get_dataset_choice(args)
+
+if dataset == "cifar":
+    args.index = ds_value  # int 或 None
+elif dataset == "image":
+    args.index = None  # custom image has no index
+
+single_image_mode = dataset == "image" or isinstance(ds_value, int)
+batch_mode = dataset != "image" and ds_value is None
+
+#  Illegal combinations detection
+if single_image_mode and args.bcomp is not None:
+    parser.error(
+        "ERROR: --bcomp cannot be used with a single image index "
+        "(or with --image). Use --met or --comp instead."
+    )
+
+if batch_mode and (args.method or args.comp):
+    parser.error(
+        "ERROR: Batch mode requires --bcomp. "
+        "Do not use --met or --comp when processing the entire dataset."
+    )
+
+if dataset == "image" and args.bcomp is not None:
+    parser.error(
+        "ERROR: --image cannot be used with --bcomp. "
+        "Custom images support only --met or --comp."
+    )
+
 
 device = "cpu"
 if torch.cuda.is_available():
@@ -288,39 +341,51 @@ def run_iDLG():
     }
 
 
-def log_result(res, name):
-    """Append key metrics to result/result.log."""
-    log_dir = Path("result")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "result.log"
-    mse_last = res["mses"][-1] if res.get("mses") else None
-    input_ref = args.image if args.image else f"CIFAR index {args.index}"
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write(
-            f"[{timestamp}] run={name} input={input_ref} "
-            f"final_loss={res['final_loss']}  "
-            f"pred_label={res['pred_label']} final_mses={mse_last}\n"
-        )
-
-
 def print_iter(history, name):
     if history:
         cols = 10
         rows = max(1, math.ceil(len(history) / cols))
-        plt.figure(f"{name} Iteration", figsize=(12, 4 * rows))
-        for i, snapshot in enumerate(history):
+        plt.figure(figsize=(12, 4 * rows))
+        for i, img in enumerate(history):
             plt.subplot(rows, cols, i + 1)
-            plt.imshow(snapshot)
-            plt.title("iter=%d" % (i * 10))
+            plt.imshow(img)
+            plt.title(f"iter={i * 10}")
             plt.axis("off")
-            if args.image:
-                plt.savefig(rf"result/{Path(args.image).stem}_DLG.png")
-            else:
-                plt.savefig(f"result/{name}.png")
 
-    else:
-        print("No snapshots recorded; nothing to plot.")
+        out_dir = Path("result")
+        if args.bcomp is not None:
+            out_dir = Path(f"result/{dataset}_bcomp")
+        elif args.comp:
+            out_dir = Path(f"result/{dataset}_comp")
+        elif args.index is not None:
+            out_dir = Path(f"result/{dataset}_index")
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        plt.tight_layout()
+        plt.savefig(out_dir / f"{name}.png")
+        plt.close()
+
+
+def log_result(res, name):
+    log_dir = Path("result")
+    if args.bcomp is not None:
+        log_dir = Path(f"result/{dataset}_bcomp")
+    elif args.comp:
+        log_dir = Path(f"result/{dataset}_comp")
+    elif args.index is not None:
+        log_dir = Path(f"result/{dataset}_index")
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "result.log"
+
+    mse_last = res["mses"][-1] if res.get("mses") else None
+    input_ref = args.image if args.image else f"{dataset}_{args.index}"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(
+            f"[{timestamp}] run={name} input={input_ref} final_loss={res['final_loss']}  "
+            f"pred_label={res['pred_label']} mses_last={mse_last}\n"
+        )
 
 
 if args.comp:
@@ -356,14 +421,15 @@ if args.comp:
         plt.imshow(res_idlg["history"][-1])
         plt.title(f"iDLG\nloss={res_idlg['final_loss']:}")
         plt.axis("off")
+    Path(f"result/{dataset}_comp").mkdir(parents=True, exist_ok=True)
     if args.image:
-        plt.savefig(f"result/{Path(args.image).stem}_comparison.png")
+        plt.savefig(f"result/Image_comp/{Path(args.image).stem}_comparison.png")
     else:
-        plt.savefig(f"result/cifar_{ args.index }_comparison.png")
+        plt.savefig(f"result/{dataset}_comp/{ args.index }_comparison.png")
 
     if args.image:
-        print_iter(res_dlg["history"], args.image + "_DLG")
-        print_iter(res_idlg["history"], args.image + "_iDLG")
+        print_iter(res_dlg["history"], f"{Path(args.image).stem}_DLG")
+        print_iter(res_idlg["history"], f"{Path(args.image).stem}_iDLG.png")
     else:
         print_iter(res_dlg["history"], f"cifar_{ args.index }_DLG")
         print_iter(res_idlg["history"], f"cifar_{ args.index }_iDLG")
@@ -388,5 +454,67 @@ elif args.method:
     plt.figure(" Leaked images")
     plt.imshow(history[-1])
     plt.axis("off")
+
+elif args.bcomp is not None:
+
+    print("\n================ Batch Comparison: DLG vs iDLG ================\n")
+
+    total = len(dst)
+    if args.bcomp is None:
+        indices = list(range(total))
+        print(f"Using full dataset: {total} samples")
+    else:
+        indices = list(np.random.choice(total, min(args.bcomp, total), replace=False))
+        print(f"Randomly sampled {len(indices)} samples")
+
+    mses_dlg, mses_idlg = [], []
+
+    for idx in indices:
+        args.index = idx
+        gt_data = tp(dst[idx][0]).to(device).unsqueeze(0)
+        gt_label = torch.tensor([dst[idx][1]]).to(device)
+        gt_onehot_label = label_to_onehot(gt_label)
+
+        # Build model + gradient
+        net = LeNet().to(device)
+        net.apply(weights_init)
+        pred = net(gt_data)
+        loss = cross_entropy_for_onehot(pred, gt_onehot_label)
+        dy_dx = torch.autograd.grad(loss, net.parameters())
+        original_dy_dx = [_.detach().clone() for _ in dy_dx]
+
+        res_dlg = run_DLG()
+        res_idlg = run_iDLG()
+
+        mses_dlg.append(res_dlg["mses"][-1])
+        mses_idlg.append(res_idlg["mses"][-1])
+
+        log_result(res_dlg, "DLG")
+        log_result(res_idlg, "iDLG")
+        print_iter(res_dlg["history"], f"{dataset}_{idx}_DLG")
+        print_iter(res_idlg["history"], f"{dataset}_{idx}_iDLG")
+
+    # 统计 Fidelity 分布并绘图
+    thresholds = [0.01, 0.005, 0.001, 0.0005, 0.0001]
+    result_dlg = [
+        100 * sum(m <= t for m in mses_dlg) / len(mses_dlg) for t in thresholds
+    ]
+    result_idlg = [
+        100 * sum(m <= t for m in mses_idlg) / len(mses_idlg) for t in thresholds
+    ]
+
+    plt.figure()
+    plt.plot(thresholds, result_dlg, marker="o", label="DLG")
+    plt.plot(thresholds, result_idlg, marker="*", label="iDLG")
+    plt.xlabel("Fidelity Threshold (MSE)")
+    plt.ylabel("% of Good Fidelity")
+    plt.title(f"{dataset.upper()}")
+    plt.legend()
+    plt.gca().invert_xaxis()
+    Path(f"result/{dataset}_bcomp").mkdir(parents=True, exist_ok=True)
+    plt.savefig(f"result/{dataset}_bcomp/fidelity.png")
+    plt.close()
+    exit()
+
 
 plt.show()
