@@ -101,7 +101,7 @@ else:
 gt_data = gt_data.view(1, *gt_data.size())
 
 
-gt_label = gt_label.view(
+gt_label = gt_label.view(  # add batch size
     1,
 )
 gt_onehot_label = label_to_onehot(gt_label)
@@ -115,11 +115,11 @@ from models.vision import LeNet, weights_init
 net = LeNet().to(device)
 
 
-torch.manual_seed(1234)
+# torch.manual_seed(1234)
 
 net.apply(weights_init)
-# criterion = cross_entropy_for_onehot
-criterion = nn.CrossEntropyLoss()
+criterion = cross_entropy_for_onehot
+# criterion = nn.CrossEntropyLoss()  # for iDLG
 
 
 # compute original gradient
@@ -127,10 +127,7 @@ pred = net(gt_data)
 y = criterion(pred, gt_onehot_label)
 dy_dx = torch.autograd.grad(y, net.parameters())
 
-original_dy_dx = list(
-    (_.detach().clone() for _ in dy_dx)
-)  # detach the gradients to avoid unnecessary computation graph
-
+original_dy_dx = list((_.detach().clone() for _ in dy_dx))
 # So this is FedSGD pattern where only one batch is used to compute gradient
 # even just one epoch of training hhh
 
@@ -138,32 +135,22 @@ num_classes = gt_onehot_label.size(1)
 
 
 def run_DLG():
-    # generate dummy data and label
+
     dummy_data = torch.randn(gt_data.size()).to(device).requires_grad_(True)
     dummy_label = torch.randn(gt_onehot_label.size()).to(device).requires_grad_(True)
     # data and label are following normal distribution(N(0,1)) to initialize
-
-    # nobody care about this dummy init image (
-    # plt.figure("Dummy Init")
-    # plt.imshow(tt(dummy_data[0].detach().cpu()))
-    # plt.axis("off")
 
     optimizer = torch.optim.LBFGS(
         [dummy_data, dummy_label], line_search_fn="strong_wolfe"
     )
     # qutoted from DLG ‘We use L-BFGS [25] with learning rate 1,
     # history size 100 and max iterations 20 and optimize for 1200 iterations
-    # and 100 iterations for image and text task respectively
 
     history = []
     mses = []  # record mse of dummy_data and gt_data
-
-    # Early stop searching: stop when loss repeats exactly 3 times
-
     recent_losses = (
         []
     )  # record loss(differencen between dummy gradient and original gradient)
-    plateau_patience = 3
     stop_iter = None
     final_loss = None
 
@@ -197,10 +184,6 @@ def run_DLG():
         with torch.no_grad():  # record history and avoid unnecessary computation graph
             if iters % 10 == 0:
                 dummy_pred = net(dummy_data)
-                # dummy_onehot = F.softmax(dummy_label, dim=-1)
-                # current_loss = criterion(dummy_pred, dummy_onehot)
-
-                # current_value = current_loss.item()
 
                 current_loss = last_grad_diff.item()  # grad_diff
                 final_loss = current_loss
@@ -210,17 +193,10 @@ def run_DLG():
                 history.append(tt(dummy_data[0].detach().cpu()))
                 recent_losses.append(current_loss)
 
-                if len(recent_losses) >= plateau_patience:
-                    window = recent_losses[-plateau_patience:]
-                    if len(set(window)) == 1:
-                        stop_iter = iters
-                        print(
-                            "[DLG] Loss stayed at %.4f for %d snapshots; stop optimizing."
-                            % (current_loss, plateau_patience)
-                        )
-                        break
+                if current_loss < 0.000001:
+                    break
 
-    # 最终标签预测（softmax(dummy_label)）
+    # predict label from dummy_label
     with torch.no_grad():
         dummy_onehot = F.softmax(dummy_label, dim=-1)
         pred_label = torch.argmax(dummy_onehot, dim=-1).item()
@@ -237,34 +213,31 @@ def run_DLG():
 
 def run_iDLG():
 
-    # 1. 从最后一层梯度预测标签（核心步骤）
-    grad_last_weight = original_dy_dx[-2]  # 最后一层 FC 权重梯度
-    # label_pred = torch.argmin(torch.sum(grad_last_weight, dim=-1)).detach()
-    # label_pred = label_pred.view(1).long().to(device)
+    # 1. From the last layer to predict the labels (the core step)
+    grad_last_weight = original_dy_dx[-2]  # The final layer of FC weight gradients
+
     label_pred = (
         torch.argmin(torch.sum(grad_last_weight, dim=-1), dim=-1)
         .detach()
         .reshape((1,))
         .requires_grad_(False)
     )
-    # 2. 生成 dummy 数据
+    # 2.generate dummy data
     dummy_data = torch.randn(gt_data.size()).to(device).requires_grad_(True)
-    dummy_label = None  # iDLG 不优化 dummy_label
+    dummy_label = None  # iDLG don't need dummy_label
 
-    # 3. iDLG 必须使用整数版 CrossEntropyLoss
+    # 3. initialize CrossEntropyLoss
     CE_loss = nn.CrossEntropyLoss()
 
-    # 4. 标准 LBFGS（不要 strong_wolfe）
+    # 4. initialize optimizer(without strong_wolfe line search)
     optimizer = torch.optim.LBFGS([dummy_data])
 
     history = []
     recent_losses = []
     mses = []
-    plateau_patience = 3
     final_loss = None
     stop_iter = None
 
-    # 5. 迭代优化
     last_grad_diff = None
     for iters in range(300):
 
@@ -272,18 +245,14 @@ def run_iDLG():
             nonlocal last_grad_diff
             optimizer.zero_grad()
 
-            # 前向
             dummy_pred = net(dummy_data)
 
-            # CrossEntropyLoss(pred, integer_label)
             dummy_loss = CE_loss(dummy_pred, label_pred)
 
-            # 计算新的 dummy 梯度
             dummy_dy_dx = torch.autograd.grad(
                 dummy_loss, net.parameters(), create_graph=True
             )
 
-            # 梯度距离（攻击核心）
             grad_diff = 0
             for gx, gy in zip(dummy_dy_dx, original_dy_dx):
                 grad_diff += ((gx - gy) ** 2).sum()
@@ -294,7 +263,6 @@ def run_iDLG():
 
         optimizer.step(closure)
 
-        # 记录可视化
         if iters % 10 == 0:
             with torch.no_grad():
                 dummy_pred = net(dummy_data)
@@ -307,15 +275,8 @@ def run_iDLG():
                 print(f"[DLG] iter {iters} loss = {current_loss} mses = {current_mse}")
                 history.append(tt(dummy_data[0].detach().cpu()))
                 recent_losses.append(current_loss)
-                if len(recent_losses) >= plateau_patience:
-                    window = recent_losses[-plateau_patience:]
-                    if len(set(window)) == 1:
-                        stop_iter = iters
-                        print(
-                            "[iDLG] Loss stayed at %.4f for %d snapshots; stop optimizing."
-                            % (current_loss, plateau_patience)
-                        )
-                        break
+                if current_loss < 0.000001:
+                    break
 
     return {
         "method": "iDLG",
@@ -338,8 +299,8 @@ def log_result(res, name):
     with log_path.open("a", encoding="utf-8") as f:
         f.write(
             f"[{timestamp}] run={name} input={input_ref} "
-            f"final_loss={res['final_loss']} stop_iter={res['stop_iter']} "
-            f"pred_label={res['pred_label']} mses_last={mse_last}\n"
+            f"final_loss={res['final_loss']}  "
+            f"pred_label={res['pred_label']} final_mses={mse_last}\n"
         )
 
 
@@ -354,7 +315,7 @@ def print_iter(history, name):
             plt.title("iter=%d" % (i * 10))
             plt.axis("off")
             if args.image:
-                plt.savefig(f"{Path(args.image).stem}_DLG.png")
+                plt.savefig(rf"result/{Path(args.image).stem}_DLG.png")
             else:
                 plt.savefig(f"result/{name}.png")
 
@@ -370,32 +331,36 @@ if args.comp:
 
     print("\n------ DLG Result ------")
     print(f"final_loss = {res_dlg['final_loss']}")
-    print(f"stop_iter  = {res_dlg['stop_iter']}")
-    print(f"pred_label = {res_dlg['pred_label']}")
     print(f"mses = {res_dlg['mses'][-1]}")
+    print(f"pred_label = {res_dlg['pred_label']}")
+
     log_result(res_dlg, "DLG")
 
     print("\n------ iDLG Result ------")
     print(f"final_loss = {res_idlg['final_loss']}")
-    print(f"stop_iter  = {res_idlg['stop_iter']}")
-    print(f"pred_label = {res_idlg['pred_label']}")
     print(f"mses = {res_idlg['mses'][-1]}")
+    print(f"pred_label = {res_idlg['pred_label']}")
+
     log_result(res_idlg, "iDLG")
 
-    # 同时展示两种方法最后的重建结果
     plt.figure("Comparison", figsize=(10, 5))
 
     if res_dlg["history"]:
         plt.subplot(1, 2, 1)
         plt.imshow(res_dlg["history"][-1])
-        plt.title(f"DLG\nloss={res_dlg['final_loss']:.4f}")
+        plt.title(f"DLG\nloss={res_dlg['final_loss']:}")
         plt.axis("off")
 
     if res_idlg["history"]:
         plt.subplot(1, 2, 2)
         plt.imshow(res_idlg["history"][-1])
-        plt.title(f"iDLG\nloss={res_idlg['final_loss']:.4f}")
+        plt.title(f"iDLG\nloss={res_idlg['final_loss']:}")
         plt.axis("off")
+    if args.image:
+        plt.savefig(f"result/{Path(args.image).stem}_comparison.png")
+    else:
+        plt.savefig(f"result/cifar_{ args.index }_comparison.png")
+
     if args.image:
         print_iter(res_dlg["history"], args.image + "_DLG")
         print_iter(res_idlg["history"], args.image + "_iDLG")
