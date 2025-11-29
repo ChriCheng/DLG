@@ -215,7 +215,10 @@ def run_DLG():
 
             dummy_onehot_label = F.softmax(dummy_label, dim=-1)
             # apply softmax to make dummy_label one-hot like
-            dummy_loss = criterion(dummy_pred, dummy_onehot_label)
+            dummy_loss = criterion(
+                dummy_pred, F.softmax(dummy_label, dummy_onehot_label)
+            )
+            # dummy_loss = criterion(dummy_pred, F.softmax(dummy_label, dim=-1))
 
             dummy_dy_dx = torch.autograd.grad(
                 dummy_loss, net.parameters(), create_graph=True
@@ -280,7 +283,7 @@ def run_iDLG():
     CE_loss = nn.CrossEntropyLoss()
 
     # 4. initialize optimizer(without strong_wolfe line search)
-    optimizer = torch.optim.LBFGS([dummy_data])
+    optimizer = torch.optim.LBFGS([dummy_data], line_search_fn="strong_wolfe")
 
     history = []
     recent_losses = []
@@ -322,7 +325,7 @@ def run_iDLG():
                 final_loss = current_loss
                 current_mse = torch.mean((dummy_data - gt_data) ** 2).item()
                 mses.append(current_loss)
-                print(f"[DLG] iter {iters} loss = {current_loss} mses = {current_mse}")
+                print(f"[iDLG] iter {iters} loss = {current_loss} mses = {current_mse}")
                 history.append(tt(dummy_data[0].detach().cpu()))
                 recent_losses.append(current_loss)
                 if current_loss < 0.000001:
@@ -391,14 +394,14 @@ if args.comp:
     res_dlg = run_DLG()
     res_idlg = run_iDLG()
 
-    print("\n------ DLG Result ------")
+    print("\n------ DLG result ------")
     print(f"final_loss = {res_dlg['final_loss']}")
     print(f"mses = {res_dlg['mses'][-1]}")
     print(f"pred_label = {res_dlg['pred_label']}")
 
     log_result(res_dlg, "DLG")
 
-    print("\n------ iDLG Result ------")
+    print("\n------ iDLG result ------")
     print(f"final_loss = {res_idlg['final_loss']}")
     print(f"mses = {res_idlg['mses'][-1]}")
     print(f"pred_label = {res_idlg['pred_label']}")
@@ -466,7 +469,8 @@ elif args.bcomp is not None:
 
     mses_dlg, mses_idlg = [], []
 
-    for idx in indices:
+    for pos, idx in enumerate(indices, 1):
+        print(f"\n---- round {pos}/{len(indices)} ----\n")
         args.index = idx
         gt_data = tp(dst[idx][0]).to(device).unsqueeze(0)
         gt_label = torch.tensor([dst[idx][1]]).to(device)
@@ -499,7 +503,6 @@ elif args.bcomp is not None:
     result_idlg = [
         100 * sum(m <= t for m in mses_idlg) / len(mses_idlg) for t in thresholds
     ]
-
     plt.figure()
     plt.plot(thresholds, result_dlg, marker="o", label="DLG")
     plt.plot(thresholds, result_idlg, marker="*", label="iDLG")
@@ -508,10 +511,11 @@ elif args.bcomp is not None:
     plt.title(f"{dataset.upper()}")
     plt.legend()
     plt.gca().invert_xaxis()
+    plt.xticks(thresholds, [str(t) for t in thresholds])  # 显示完整 x 轴刻度
+    # plt.gca().set_xscale("log")  # 可
     Path(f"result/{dataset}_bcomp").mkdir(parents=True, exist_ok=True)
     plt.savefig(f"result/{dataset}_bcomp/fidelity.png")
     plt.close()
-    exit()
 
 
 plt.show()
